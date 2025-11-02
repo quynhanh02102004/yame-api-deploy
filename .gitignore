@@ -1,0 +1,15 @@
+# Git LFS
+.gitattributes
+
+# Python
+__pycache__/
+*.pyc
+
+# Data and models that will be downloaded from GDrive
+/data/
+/models/
+/embeddings/
+
+# Môi trường ảo
+.venv/
+venv/
