@@ -12,26 +12,28 @@ def download_assets_from_gdrive():
     Tự động tạo các thư mục con nếu cần.
     """
     # !!! QUAN TRỌNG: HÃY THAY THẾ CÁC 'YOUR_FILE_ID_HERE' BẰNG FILE ID THẬT CỦA BẠN !!!
+    # Đây là danh sách 8 file mà ứng dụng của bạn cần
     file_configs = {
         # Model
-        "models/resnet50_proj512_best.pt": "1eUhNvt3r6I1oPJ58fDjH6LLBG4UdeiaJ",
+        "models/resnet50_proj512_best.pt": "YOUR_FILE_ID_FOR_MODEL_PT",
         # Metadata
-        "data/items_metadata_joined_fixed.json": "1sLzSQJwE5PAanEWCJbQPowaJvhC7LOQR",
+        "data/items_metadata_joined_fixed.json": "YOUR_FILE_ID_FOR_METADATA_JSON",
         # Similarity files
-        "data/similarity/faiss_index.index": "1RVy1JhdHziVYujskKuhNbClfOj9X0B9J",
-        "data/similarity/id_map.json": "1jpyA03eK6_U5YWRlFHkQulYAv5e95_wn",
-        "data/similarity/vectors.npy": "1Ap_ANmjiEeJteDiK_PmagXT-zy8sZDbn",
+        "data/similarity/faiss_index.index": "YOUR_FILE_ID_FOR_SIMILARITY_INDEX",
+        "data/similarity/id_map.json": "YOUR_FILE_ID_FOR_SIMILARITY_IDMAP",
+        "data/similarity/vectors.npy": "YOUR_FILE_ID_FOR_SIMILARITY_VECTORS",
         # Compatibility files
-        "data/compatibility/faiss_index_feature2.index": "1Wr__yDZknAbGnwUHOJsKt40GuXhW99lW",
-        "data/compatibility/id_map_feature2.json": "1sDQj4_uXPe6jZ4Y3_IMdlsdxgzlTHYU4",
-        "data/compatibility/vectors_feature2.npy": "15AeDzXMO6FSS9PN1wTnNklXEOOflE8NT",
+        "data/compatibility/faiss_index_feature2.index": "YOUR_FILE_ID_FOR_COMPAT_INDEX",
+        "data/compatibility/id_map_feature2.json": "YOUR_FILE_ID_FOR_COMPAT_IDMAP",
+        "data/compatibility/vectors_feature2.npy": "YOUR_FILE_ID_FOR_COMPAT_VECTORS",
     }
     
     print("--- Starting Asset Download from Google Drive ---")
     for relative_path, file_id in file_configs.items():
-        if file_id == "YOUR_FILE_ID_HERE":
-            print(f"WARNING: Skipping {relative_path}, please provide a File ID.")
-            continue
+        if "YOUR_FILE_ID" in file_id:
+            print(f"WARNING: Skipping {relative_path}, please provide a valid File ID.")
+            # Dừng chương trình nếu thiếu File ID để dễ gỡ lỗi
+            raise ValueError(f"Missing Google Drive File ID for {relative_path}")
             
         dir_name = os.path.dirname(relative_path)
         if dir_name and not os.path.exists(dir_name):
@@ -46,7 +48,7 @@ def download_assets_from_gdrive():
             print(f"{relative_path} already exists. Skipping download.")
     print("--- Asset Download Finished ---")
 
-# CHẠY HÀM TẢI FILE NGAY LẬP TỨC
+# CHẠY HÀM TẢI FILE NGAY LẬP TỨC TRƯỚC KHI LÀM BẤT CỨ ĐIỀU GÌ KHÁC
 download_assets_from_gdrive()
 # ===================================================================
 # =========== CODE GỐC CỦA BẠN BẮT ĐẦU TỪ ĐÂY =======================
@@ -75,9 +77,6 @@ from torchvision import models
 # ---------------------------- Config ----------------------------
 DATA_DIR   = os.getenv("DATA_DIR", "data")
 MODELS_DIR = os.getenv("MODELS_DIR", "models")
-# Sử dụng URL Vercel của bạn làm mặc định, nhưng vẫn cho phép tùy chỉnh qua biến môi trường
-DEFAULT_CORS = "http://localhost:3000,https://yame-clone-animated.vercel.app"
-CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", DEFAULT_CORS).split(",")]
 
 # --- Paths cho SIMILARITY search ---
 SIMILARITY_DATA_DIR = os.path.join(DATA_DIR, "similarity")
@@ -105,7 +104,28 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 # ---------------------------- App init --------------------------
 app = FastAPI(title="Polyvore Smart Compatibility Backend", version="3.2.0-final")
-app.add_middleware(CORSMiddleware, allow_origins=["*"] if "*" in CORS_ORIGINS else CORS_ORIGINS, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# ===================================================================
+# =========== PHẦN SỬA LỖI: BẬT QUYỀN TRUY CẬP CORS =================
+# ===================================================================
+# Đây là danh sách các "địa chỉ" được phép truy cập vào API của bạn
+origins = [
+    # Dòng này cho phép bạn chạy frontend ở local (cổng 3000) để test
+    "http://localhost:3000",
+    
+    # Dòng này cho phép trang web của bạn trên Vercel được truy cập
+    "https://yame-clone-animated.vercel.app"
+]
+# Thêm middleware CORS vào ứng dụng FastAPI để "bật quyền"
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,       # Chỉ cho phép các địa chỉ trong danh sách `origins`
+    allow_credentials=True,      # Cho phép gửi cookie (nếu có)
+    allow_methods=["*"],         # Cho phép tất cả các phương thức (GET, POST, etc.)
+    allow_headers=["*"],         # Cho phép tất cả các header
+)
+# ===================================================================
+
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 @app.middleware("http")
@@ -121,9 +141,6 @@ if os.path.isdir(IMAGES_DIR):
     app.mount("/images", StaticFiles(directory=IMAGES_DIR), name="images")
 
 # ... (TOÀN BỘ LOGIC CÒN LẠI CỦA BẠN GIỮ NGUYÊN) ...
-# (Tôi sẽ rút gọn phần logic này để câu trả lời không quá dài,
-# nhưng bạn hãy copy toàn bộ phần còn lại từ file gốc của bạn vào đây)
-
 # ===================================================================
 # =========== LOGIC DEFINITIONS FOR SMART COMPATIBILITY =============
 # ===================================================================
@@ -142,6 +159,7 @@ INCOMPATIBLE_PAIRS = {
     'BOTTOMS': {'ALL-BODY'},
     'OUTERWEAR': {'ALL-BODY'}
 }
+
 # -------------------- Load Resources ---------------------
 def _require(path: str):
     if not os.path.exists(path): raise FileNotFoundError(f"Missing required file: {path}")
