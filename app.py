@@ -15,17 +15,17 @@ def download_assets_from_gdrive():
     # Đây là danh sách 8 file mà ứng dụng của bạn cần
     file_configs = {
         # Model
-        "models/resnet50_proj512_best.pt": "YOUR_FILE_ID_FOR_MODEL_PT",
+        "models/resnet50_proj512_best.pt": "1eUhNvt3r6I1oPJ58fDjH6LLBG4UdeiaJ",
         # Metadata
-        "data/items_metadata_joined_fixed.json": "YOUR_FILE_ID_FOR_METADATA_JSON",
+        "data/items_metadata_joined_fixed.json": "1sLzSQJwE5PAanEWCJbQPowaJvhC7LOQR",
         # Similarity files
-        "data/similarity/faiss_index.index": "YOUR_FILE_ID_FOR_SIMILARITY_INDEX",
-        "data/similarity/id_map.json": "YOUR_FILE_ID_FOR_SIMILARITY_IDMAP",
-        "data/similarity/vectors.npy": "YOUR_FILE_ID_FOR_SIMILARITY_VECTORS",
+        "data/similarity/faiss_index.index": "1RVy1JhdHziVYujskKuhNbClfOj9X0B9J",
+        "data/similarity/id_map.json": "1jpyA03eK6_U5YWRlFHkQulYAv5e95_wn",
+        "data/similarity/vectors.npy": "1Ap_ANmjiEeJteDiK_PmagXT-zy8sZDbn",
         # Compatibility files
-        "data/compatibility/faiss_index_feature2.index": "YOUR_FILE_ID_FOR_COMPAT_INDEX",
-        "data/compatibility/id_map_feature2.json": "YOUR_FILE_ID_FOR_COMPAT_IDMAP",
-        "data/compatibility/vectors_feature2.npy": "YOUR_FILE_ID_FOR_COMPAT_VECTORS",
+        "data/compatibility/faiss_index_feature2.index": "1Wr__yDZknAbGnwUHOJsKt40GuXhW99lW",
+        "data/compatibility/id_map_feature2.json": "1sDQj4_uXPe6jZ4Y3_IMdlsdxgzlTHYU4",
+        "data/compatibility/vectors_feature2.npy": "15AeDzXMO6FSS9PN1wTnNklXEOOflE8NT",
     }
     
     print("--- Starting Asset Download from Google Drive ---")
