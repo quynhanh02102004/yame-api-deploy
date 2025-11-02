@@ -1,36 +1,38 @@
-# CÁC THƯ VIỆN CẦN THIẾT
+# ===================================================================
+# =========== PHẦN MỚI: TỰ ĐỘNG TẢI FILE TỪ GDRIVE ==================
+# ===================================================================
 import os
 import gdown
-import json
-from fastapi import FastAPI, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
-import torch
-import faiss
-from PIL import Image
-import numpy as np
-# import pandas as pd # Không thấy dùng pandas trong code gốc, có thể bỏ
-import io
-import torchvision.transforms as transforms
+from collections import OrderedDict
 
-# --- PHẦN MỚI: TỰ ĐỘNG TẢI MODEL TỪ GOOGLE DRIVE ---
-# Code này sẽ tạo các thư mục cần thiết và tải file từ Google Drive
-# nếu chúng chưa tồn tại trên server.
-
-# === FILE IDs ĐÃ ĐƯỢC ĐIỀN SẴN DỰA TRÊN LINK BẠN CUNG CẤP ===
-file_configs = {
-    "models/model.pth": "1eUhNvt3r6I1oPJ58fDjH6LLBG4UdeiaJ",
-    "data/similarity/faiss_index.index": "1RVy1JhdHziVYujskKuhNbClfOj9X0B9J",
-    "data/similarity/vectors.npy": "1Ap_ANmjiEeJteDiK_PmagXT-zy8sZDbn",
-    "data/similarity/id_map.json": "1jpyA03eK6_U5YWRlFHkQulYAv5e95_wn",
-    "data/items_metadata_joined_fixed.json": "1sLzSQJwE5PAanEWCJbQPowaJvhC7LOQR"
-}
-# =============================================================
-
-# Hàm để tải file, tự động tạo thư mục cha nếu cần
-def download_files():
-    print("Checking for model and data files...")
+# HÀM NÀY SẼ CHẠY ĐẦU TIÊN ĐỂ ĐẢM BẢO TẤT CẢ CÁC FILE ĐỀU TỒN TẠI
+def download_assets_from_gdrive():
+    """
+    Tải tất cả các file model và data cần thiết từ Google Drive.
+    Tự động tạo các thư mục con nếu cần.
+    """
+    # !!! QUAN TRỌNG: HÃY THAY THẾ CÁC 'YOUR_FILE_ID_HERE' BẰNG FILE ID THẬT CỦA BẠN !!!
+    file_configs = {
+        # Model
+        "models/resnet50_proj512_best.pt": "1eUhNvt3r6I1oPJ58fDjH6LLBG4UdeiaJ",
+        # Metadata
+        "data/items_metadata_joined_fixed.json": "1sLzSQJwE5PAanEWCJbQPowaJvhC7LOQR",
+        # Similarity files
+        "data/similarity/faiss_index.index": "1RVy1JhdHziVYujskKuhNbClfOj9X0B9J",
+        "data/similarity/id_map.json": "1jpyA03eK6_U5YWRlFHkQulYAv5e95_wn",
+        "data/similarity/vectors.npy": "1Ap_ANmjiEeJteDiK_PmagXT-zy8sZDbn",
+        # Compatibility files
+        "data/compatibility/faiss_index_feature2.index": "1Wr__yDZknAbGnwUHOJsKt40GuXhW99lW",
+        "data/compatibility/id_map_feature2.json": "1sDQj4_uXPe6jZ4Y3_IMdlsdxgzlTHYU4",
+        "data/compatibility/vectors_feature2.npy": "15AeDzXMO6FSS9PN1wTnNklXEOOflE8NT",
+    }
+    
+    print("--- Starting Asset Download from Google Drive ---")
     for relative_path, file_id in file_configs.items():
-        # Tạo thư mục cha nếu nó không tồn tại
+        if file_id == "YOUR_FILE_ID_HERE":
+            print(f"WARNING: Skipping {relative_path}, please provide a File ID.")
+            continue
+            
         dir_name = os.path.dirname(relative_path)
         if dir_name and not os.path.exists(dir_name):
             os.makedirs(dir_name, exist_ok=True)
@@ -42,96 +44,297 @@ def download_files():
             print(f"{relative_path} downloaded successfully.")
         else:
             print(f"{relative_path} already exists. Skipping download.")
+    print("--- Asset Download Finished ---")
 
-# Chạy hàm tải file ngay khi ứng dụng khởi động
-download_files()
-# ----------------------------------------------------
+# CHẠY HÀM TẢI FILE NGAY LẬP TỨC
+download_assets_from_gdrive()
+# ===================================================================
+# =========== CODE GỐC CỦA BẠN BẮT ĐẦU TỪ ĐÂY =======================
+# ===================================================================
 
+import io
+import json
+import logging
+import time
+from typing import Dict, List, Optional, Tuple
 
-# KHỞI TẠO ỨNG DỤNG FASTAPI
-app = FastAPI(title='Recommendation System API')
+import faiss
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from fastapi import FastAPI, File, HTTPException, UploadFile, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
+from PIL import Image
+from pydantic import BaseModel
+import torchvision.transforms as T
+from torchvision import models
 
-# CẤU HÌNH CORS
-origins = [
-    "http://localhost:3000",
-    "https://yame-clone-animated.vercel.app"
-]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ---------------------------- Config ----------------------------
+DATA_DIR   = os.getenv("DATA_DIR", "data")
+MODELS_DIR = os.getenv("MODELS_DIR", "models")
+# Sử dụng URL Vercel của bạn làm mặc định, nhưng vẫn cho phép tùy chỉnh qua biến môi trường
+DEFAULT_CORS = "http://localhost:3000,https://yame-clone-animated.vercel.app"
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", DEFAULT_CORS).split(",")]
 
-# --- TẢI MODEL VÀ DỮ LIỆU TỪ CÁC FILE ĐÃ TẢI VỀ ---
-print("Loading models and data from local files...")
+# --- Paths cho SIMILARITY search ---
+SIMILARITY_DATA_DIR = os.path.join(DATA_DIR, "similarity")
+INDEX_PATH = os.path.join(SIMILARITY_DATA_DIR, "faiss_index.index")
+IDMAP_PATH = os.path.join(SIMILARITY_DATA_DIR, "id_map.json")
+VEC_PATH   = os.path.join(SIMILARITY_DATA_DIR, "vectors.npy")
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Using device: {device}")
+# --- Paths cho COMPATIBILITY search ---
+COMPAT_DATA_DIR = os.path.join(DATA_DIR, "compatibility")
+COMPAT_INDEX_PATH = os.path.join(COMPAT_DATA_DIR, "faiss_index_feature2.index")
+COMPAT_IDMAP_PATH = os.path.join(COMPAT_DATA_DIR, "id_map_feature2.json")
+COMPAT_VEC_PATH = os.path.join(COMPAT_DATA_DIR, "vectors_feature2.npy")
 
-# Tải model ResNet
-model = torch.load('models/model.pth', map_location=device)
-model.eval()
-print("PyTorch model loaded successfully.")
+# --- Path dùng chung và model ---
+META_PATH  = os.path.join(DATA_DIR, "items_metadata_joined_fixed.json")
+WEIGHTS    = os.path.join(MODELS_DIR, "resnet50_proj512_best.pt")
 
-# Tải dữ liệu cho Similarity
-similarity_vectors = np.load('data/similarity/vectors.npy')
-with open('data/similarity/id_map.json', 'r') as f:
-    similarity_id_map = json.load(f)
-similarity_faiss_index = faiss.read_index('data/similarity/faiss_index.index')
-print("Similarity data loaded.")
+EMBED_DIM = 512
+AUTO_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = os.getenv("DEVICE", AUTO_DEVICE)
 
-# Tải metadata sản phẩm
-with open('data/items_metadata_joined_fixed.json', 'r') as f:
-    items_metadata = json.load(f)
-print("Items metadata loaded.")
+# ---------------------------- Logging ---------------------------
+logger = logging.getLogger("polyvore-backend")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 
-# Định nghĩa các bước chuyển đổi hình ảnh
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
-print("Image transformer created.")
-print("--- Server is ready to accept requests ---")
-# ------------------------------------------------
+# ---------------------------- App init --------------------------
+app = FastAPI(title="Polyvore Smart Compatibility Backend", version="3.2.0-final")
+app.add_middleware(CORSMiddleware, allow_origins=["*"] if "*" in CORS_ORIGINS else CORS_ORIGINS, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
-# --- CÁC API ENDPOINTS (Lấy từ repo của bạn) ---
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to Recommendation API!"}
+@app.middleware("http")
+async def add_timing(request, call_next):
+    t0 = time.time()
+    resp = await call_next(request)
+    ms = (time.time() - t0) * 1000
+    logger.info("%s %s -> %d (%.1f ms)", request.method, request.url.path, resp.status_code, ms)
+    return resp
 
-@app.post("/api/recommend_by_image")
-async def recommend_by_image(file: UploadFile = File(...)):
-    """
-    Nhận một file ảnh và trả về các sản phẩm tương tự.
-    """
-    contents = await file.read()
-    image = Image.open(io.BytesIO(contents)).convert("RGB")
-    
-    # Trích xuất vector từ ảnh
-    image_tensor = transform(image).unsqueeze(0).to(device)
-    with torch.no_grad():
-        query_vector = model(image_tensor).cpu().numpy()
+IMAGES_DIR = os.path.join(DATA_DIR, "images")
+if os.path.isdir(IMAGES_DIR):
+    app.mount("/images", StaticFiles(directory=IMAGES_DIR), name="images")
 
-    # Tìm kiếm trong Faiss
-    k = 10  # Số lượng sản phẩm gợi ý
-    distances, indices = similarity_faiss_index.search(query_vector, k)
-    
-    # Lấy ID sản phẩm và thông tin metadata
+# ... (TOÀN BỘ LOGIC CÒN LẠI CỦA BẠN GIỮ NGUYÊN) ...
+# (Tôi sẽ rút gọn phần logic này để câu trả lời không quá dài,
+# nhưng bạn hãy copy toàn bộ phần còn lại từ file gốc của bạn vào đây)
+
+# ===================================================================
+# =========== LOGIC DEFINITIONS FOR SMART COMPATIBILITY =============
+# ===================================================================
+SUMMER_BEACH_SUBCATS = {'swimsuit', 'one-piece swimsuit', 'swimsuit bottom', 'swimsuit top', 'coverup', 'male swim shorts', 'flip-flops', 'male flip-flops', 'sandal', 'sandals', 'kimono', 'shorts'}
+WINTER_COLD_SUBCATS = {'winter hat', 'gloves', 'male gloves', 'scarf', 'male scarves', 'turtleneck sweater', 'sweater', 'male sweater', 'parka', 'coat', 'boots', 'booties', 'heeled boots', 'over-the-knee boots', 'flat boots'}
+FORMAL_OFFICE_SUBCATS = {'blazer', 'male formal jacket', 'male suit jacket', 'male suit pants', 'male suit', 'heels', 'pump', 'male formal shoes', 'male loafers', 'male shirt', 'blouse', 'tie', 'bowtie', 'cufflings'}
+
+SUMMER_BEACH_WHITELIST = {'TOPS', 'BOTTOMS', 'BAGS', 'JEWELLERY', 'SHOES', 'ACCESSORIES', 'SUNGLASSES', 'HATS', 'ALL-BODY'}
+WINTER_WHITELIST = {'TOPS', 'BOTTOMS', 'BAGS', 'JEWELLERY', 'SHOES', 'ACCESSORIES', 'OUTERWEAR', 'HATS'}
+FORMAL_OFFICE_WHITELIST = {'TOPS', 'BOTTOMS', 'BAGS', 'JEWELLERY', 'SHOES', 'ACCESSORIES', 'OUTERWEAR'}
+GENERAL_WHITELIST = {'TOPS', 'BOTTOMS', 'BAGS', 'JEWELLERY', 'SHOES', 'ACCESSORIES', 'OUTERWEAR', 'ALL-BODY'}
+
+INCOMPATIBLE_PAIRS = {
+    'ALL-BODY': {'TOPS', 'BOTTOMS', 'OUTERWEAR'},
+    'TOPS': {'ALL-BODY'},
+    'BOTTOMS': {'ALL-BODY'},
+    'OUTERWEAR': {'ALL-BODY'}
+}
+# -------------------- Load Resources ---------------------
+def _require(path: str):
+    if not os.path.exists(path): raise FileNotFoundError(f"Missing required file: {path}")
+
+_require(META_PATH)
+with open(META_PATH, "r", encoding="utf-8") as f: _meta: Dict[str, dict] = json.load(f)
+logger.info("Metadata loaded with %d items", len(_meta))
+
+_require(INDEX_PATH); _require(IDMAP_PATH)
+_index = faiss.read_index(INDEX_PATH)
+with open(IDMAP_PATH, "r") as f: _id_map: Dict[int, str] = {int(k): v for k, v in json.load(f).items()}
+_inv_map: Dict[str, int] = {v: k for k, v in _id_map.items()}
+_vectors: Optional[np.ndarray] = np.load(VEC_PATH, mmap_mode="r") if os.path.exists(VEC_PATH) else None
+logger.info("Similarity resources loaded. Has vectors.npy: %s", _vectors is not None)
+
+_compat_index, _compat_id_map, _compat_inv_map, _compat_vectors = (None, {}, {}, None)
+if os.path.exists(COMPAT_INDEX_PATH):
+    try:
+        _compat_index = faiss.read_index(COMPAT_INDEX_PATH)
+        with open(COMPAT_IDMAP_PATH, "r") as f: _compat_id_map = {int(k): v for k, v in json.load(f).items()}
+        _compat_inv_map = {v: k for k, v in _compat_id_map.items()}
+        _compat_vectors = np.load(COMPAT_VEC_PATH)
+        logger.info("Compatibility resources loaded successfully.")
+    except Exception as e:
+        logger.error(f"Failed to load compatibility resources: %s", e)
+
+# ------------------ Model Definition and Loading ------------------
+class FineTuneModel(nn.Module):
+    def __init__(self, out_dim=EMBED_DIM):
+        super().__init__()
+        resnet = models.resnet50(weights=None)
+        self.backbone = nn.Sequential(*list(resnet.children())[:-1])
+        self.proj = nn.Linear(2048, out_dim)
+    def forward(self, x):
+        x = self.backbone(x).view(x.size(0), -1)
+        return F.normalize(self.proj(x), p=2, dim=1)
+
+_model: nn.Module = None
+if os.path.exists(WEIGHTS):
+    try:
+        def load_model(weights_path, device):
+            model = FineTuneModel(out_dim=EMBED_DIM).to(device).eval()
+            ckpt = torch.load(weights_path, map_location=device)
+            state = ckpt.get("state_dict", ckpt)
+            filtered = {k: v for k, v in state.items() if k.startswith(("backbone.", "proj."))}
+            model.load_state_dict(filtered, strict=False)
+            return model
+        _model = load_model(WEIGHTS, DEVICE)
+        logger.info("Model weights loaded successfully.")
+    except Exception as e:
+        logger.error(f"Failed to load model weights: {e}")
+
+preprocess = T.Compose([T.Resize((224, 224)), T.ToTensor(), T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+
+@torch.inference_mode()
+def image_to_vec(img: Image.Image) -> np.ndarray:
+    if not _model: raise HTTPException(503, "Image search disabled: model not loaded.")
+    img_rgb = img.convert("RGB")
+    x = preprocess(img_rgb).unsqueeze(0).to(DEVICE)
+    return _model(x)[0].cpu().numpy().astype(np.float32)
+
+# ---------------------- API Schemas ----------------------
+class SearchHit(BaseModel):
+    item_id: str; score: float; title: Optional[str] = None
+    main_category: Optional[str] = None; sub_category: Optional[str] = None
+    image_path: Optional[str] = None
+
+class SearchResponse(BaseModel):
+    results: List[SearchHit]
+
+# ------------------- Core Search Logic with Re-ranking ----------------------
+def _normalize(v: np.ndarray) -> np.ndarray:
+    n = np.linalg.norm(v); return v if n == 0 else (v / n)
+
+def _calculate_exact_cosine(query_vec: np.ndarray, result_indices: List[int], vector_matrix: np.ndarray) -> np.ndarray:
+    if not result_indices: return np.array([])
+    q_norm = _normalize(query_vec)
+    candidate_vectors = vector_matrix[result_indices]
+    norms = np.linalg.norm(candidate_vectors, axis=1, keepdims=True)
+    candidate_vectors_norm = candidate_vectors / np.where(norms == 0, 1e-8, norms)
+    return (candidate_vectors_norm @ q_norm.reshape(-1, 1)).ravel()
+
+def _format_results(item_ids: List[str], scores: List[float]) -> List[SearchHit]:
     results = []
-    for i in indices[0]:
-        item_id = similarity_id_map.get(str(i)) # Dùng .get() để an toàn hơn
-        if item_id:
-            item_info = items_metadata.get(item_id, {})
-            if item_info:
-                results.append({
-                    "id": item_id,
-                    "name": item_info.get("name"),
-                    "image": item_info.get("image"),
-                    "price": item_info.get("price"),
-                    "brand": item_info.get("brand") # Thêm brand nếu có
-                })
-            
-    return {"results": results}
+    for item_id, score in zip(item_ids, scores):
+        meta = _meta.get(item_id, {})
+        results.append(SearchHit(
+            item_id=item_id, score=float(score), title=meta.get("title"),
+            main_category=meta.get("main_category"), sub_category=meta.get("subcategory"),
+            image_path=meta.get("image_path")
+        ))
+    return results
+
+# -------------------- API Endpoints ---------------------
+@app.get("/healthz")
+def healthz(): return {"status": "ok", "similarity_items": len(_id_map), "compatibility_items": len(_compat_id_map)}
+
+# === ENDPOINT "THÔNG MINH" NHẤT CHO GỢI Ý PHỐI ĐỒ ===
+@app.post("/compatible/{item_id}", response_model=SearchResponse, summary="Get smart, context-aware compatible items")
+def get_compatible_items_smart_filter(
+    item_id: str, topk: int = Query(5, ge=1, le=10), candidates: int = Query(50000, ge=100),
+):
+    if not _compat_index: raise HTTPException(503, "Compatibility feature is not available.")
+    if item_id not in _compat_inv_map: raise HTTPException(404, "Item not found in database.")
+
+    q_meta = _meta.get(item_id, {})
+    query_main_cat = q_meta.get("main_category", "").strip().upper()
+    query_sub_cat = q_meta.get("subcategory", "").strip()
+
+    category_whitelist = GENERAL_WHITELIST
+    forbidden_subcat_group = set()
+    context = "GENERAL"
+    if query_sub_cat in SUMMER_BEACH_SUBCATS:
+        category_whitelist = SUMMER_BEACH_WHITELIST; forbidden_subcat_group = WINTER_COLD_SUBCATS; context = "SUMMER/BEACH"
+    elif query_sub_cat in WINTER_COLD_SUBCATS:
+        category_whitelist = WINTER_WHITELIST; forbidden_subcat_group = SUMMER_BEACH_SUBCATS; context = "WINTER/COLD"
+    elif query_sub_cat in FORMAL_OFFICE_SUBCATS:
+        category_whitelist = FORMAL_OFFICE_WHITELIST; context = "FORMAL/OFFICE"
+    
+    logger.info(f"Item {item_id} context: {context}. Activating filter rules.")
+    blacklisted_categories = INCOMPATIBLE_PAIRS.get(query_main_cat, set())
+
+    q_index = _compat_inv_map[item_id]
+    query_vec = _compat_vectors[q_index].astype('float32').reshape(1, -1)
+    _, I = _compat_index.search(query_vec, candidates)
+
+    filtered_candidates = []
+    selected_categories = {query_main_cat}
+    
+    for iid in I[0]:
+        if iid < 0 or iid == q_index: continue
+        
+        result_item_id = _compat_id_map.get(int(iid))
+        if not result_item_id: continue
+
+        meta = _meta.get(result_item_id, {})
+        main_cat = meta.get("main_category", "").strip().upper()
+        sub_cat = meta.get("subcategory", "").strip()
+
+        if (not main_cat or
+            main_cat not in category_whitelist or
+            main_cat in selected_categories or
+            main_cat in blacklisted_categories or
+            sub_cat in forbidden_subcat_group):
+            continue
+        
+        filtered_candidates.append(int(iid))
+        selected_categories.add(main_cat)
+    
+    if not filtered_candidates: return SearchResponse(results=[])
+
+    scores = _calculate_exact_cosine(query_vec.flatten(), filtered_candidates, _compat_vectors)
+    sorted_reranked_indices = np.array(filtered_candidates)[np.argsort(-scores)]
+    final_indices = sorted_reranked_indices[:topk].tolist()
+    
+    final_item_ids = [_compat_id_map[i] for i in final_indices]
+    final_scores = _calculate_exact_cosine(query_vec.flatten(), final_indices, _compat_vectors)
+    
+    return SearchResponse(results=_format_results(final_item_ids, final_scores.tolist()))
+
+# === CÁC ENDPOINT CŨ CHO TÌM KIẾM TƯƠNG TỰ (với re-ranking) ===
+def _perform_similarity_search(query_vec: np.ndarray, topk: int, rerank: bool, candidates: Optional[int] = None) -> List[SearchHit]:
+    k = max(1, topk); k_candidates = candidates or (k * 20 if rerank else k)
+    D, I = _index.search(_normalize(query_vec).reshape(1, -1).astype('float32'), k_candidates)
+    
+    result_indices = I[0][I[0] >= 0].tolist()
+    if not result_indices: return []
+
+    if rerank and _vectors is not None:
+        scores = _calculate_exact_cosine(query_vec, result_indices, _vectors)
+        sorted_reranked_indices = np.array(result_indices)[np.argsort(-scores)]
+        final_indices = sorted_reranked_indices[:k].tolist()
+        final_scores = _calculate_exact_cosine(query_vec, final_indices, _vectors).tolist()
+    else:
+        final_indices = result_indices[:k]; final_distances = D[0][:k]
+        final_scores = [1.0 - (d / 2.0) for d in final_distances]
+    
+    final_item_ids = [_id_map[i] for i in final_indices]
+    return _format_results(final_item_ids, final_scores)
+
+@app.post("/similar/{item_id}", response_model=SearchResponse, summary="Find visually similar items")
+def similar(item_id: str, topk: int = Query(10, ge=1), rerank: bool = Query(True), candidates: Optional[int] = None):
+    if item_id not in _inv_map: raise HTTPException(404, "Item not found")
+    vec = _vectors[_inv_map[item_id]] if _vectors is not None else _index.reconstruct(_inv_map[item_id])
+    return SearchResponse(results=_perform_similarity_search(vec, topk, rerank, candidates))
+
+@app.post("/search_image", response_model=SearchResponse, summary="Find similar items by uploading an image")
+async def search_image(file: UploadFile = File(...), topk: int = Query(10, ge=1), rerank: bool = Query(True), candidates: Optional[int] = None):
+    content = await file.read(); img = Image.open(io.BytesIO(content))
+    vec = image_to_vec(img)
+    return SearchResponse(results=_perform_similarity_search(vec, topk, rerank, candidates))
+
+if __name__ == "__main__":
+    import uvicorn
+    logger.info("Starting Uvicorn server...")
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
